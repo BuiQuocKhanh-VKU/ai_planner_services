@@ -139,13 +139,22 @@ def _guess_item_type(title: Optional[str], current_type: Optional[str]) -> str:
     return current_type or "task"
 
 
+
 def _source_context(original_input_text: str) -> List[str]:
     text = _norm_space(original_input_text) or ""
     if not text:
         return []
 
-    # Tách theo " và " hoặc dấu phẩy
-    parts = re.split(r"\s+và\s+|,\s*", text)
+    # Tách các connector lập lịch phổ biến.
+    # Ví dụ:
+    # "20 giờ và tập đàn..."
+    # "21 giờ sau đó đi ngủ..."
+    parts = re.split(
+        r"\s+(?:và|rồi|sau đó|xong rồi|tiếp đó|tiếp theo|kế đó)\s+|,\s*",
+        text,
+        flags=re.IGNORECASE
+    )
+
     parts = [_norm_space(p) for p in parts if _norm_space(p)]
     return parts
 
@@ -353,7 +362,170 @@ def _refine_time_from_source_text(item: Dict[str, Any]) -> None:
             _note(item, f"time_text replaced from vague '{current_time}' to '{new_time}'")
 
 
-            
+def _extract_title_from_source_text(text: Optional[str]) -> Optional[str]:
+    """
+    Cứu title từ source_text sau khi đã gán fragment.
+    Ví dụ:
+    - '3 giờ đi làm bài tập ở trường VKU' -> 'đi làm bài tập'
+    - 'Tôi sẽ làm bài tập với Nam ở thư viện lúc 2 giờ' -> 'làm bài tập'
+    """
+    t = _norm_space(text)
+    if not t:
+        return None
+
+    # Bỏ chủ ngữ / modal đầu câu
+    t = re.sub(r"^\s*tôi\s+sẽ\s+", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"^\s*tôi\s+", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"^\s*sẽ\s+", "", t, flags=re.IGNORECASE)
+
+    # Bỏ cụm thời gian tương đối ở đầu câu để tránh nhầm vào title
+    t = re.sub(r"^\s*(ngày\s+mai|mai|hôm\s+nay|tối\s+nay|sáng\s+mai|chiều\s+mai|tối\s+mai)\s+", "", t, flags=re.IGNORECASE)
+
+     # Bỏ giờ ở đầu câu: "3 giờ đi làm bài tập..." -> "đi làm bài tập..."
+    t = re.sub(r"^\s*\d{1,2}(?::\d{2})?\s*(giờ|h)\s+", "", t, flags=re.IGNORECASE)
+
+    # Cắt trước các cụm person/location/time/deadline
+    t = re.split(
+        r"\s+(với|cùng|ở|tại|lúc|vào|tầm|khoảng|trước|sau)\s+",
+        t,
+        maxsplit=1,
+        flags=re.IGNORECASE
+    )[0]
+
+    t = t.strip(" ,.-:")
+    return _norm_space(t)
+
+
+def _remove_time_phrase_from_title(title: Optional[str]) -> Optional[str]:
+    t = _norm_space(title)
+    if not t:
+        return None
+
+    # "học bài vào 20 giờ" -> "học bài"
+    # "học bài lúc 20 giờ" -> "học bài"
+    t = re.sub(
+        r"\s+(lúc|vào|tầm|khoảng)\s+\d{1,2}(?::\d{2})?\s*(giờ|h)\b",
+        "",
+        t,
+        flags=re.IGNORECASE
+    )
+
+    t = t.strip(" ,.-:")
+    return _norm_space(t)
+
+
+def _fix_common_model_typos(item: Dict[str, Any]) -> None:
+    title = _safe_str(item.get("title"))
+    if not title:
+        return
+
+    typo_map = {
+        "đi ngộ": "đi ngủ",
+    }
+
+    fixed = typo_map.get(title.lower())
+
+    if fixed:
+        old = item.get("title")
+        item["title"] = fixed
+        _flag(item, "title_typo_fixed")
+        _note(item, f"title typo fixed: '{old}' -> '{fixed}'")
+
+
+def _fix_false_duration_from_clock_time(item: Dict[str, Any]) -> None:
+    """
+    Model hay nhầm '20 giờ' thành duration_text '20 phút'.
+    Nếu source_text không có duration thật thì xoá duration_text.
+    """
+    duration_text = _safe_str(item.get("duration_text"))
+    source_text = _safe_str(item.get("source_text"))
+
+    if not duration_text or not source_text:
+        return
+
+    source_l = source_text.lower()
+    duration_l = duration_text.lower()
+
+    duration_like_in_source = bool(
+        re.search(r"\btrong\s+\d{1,3}\s*(phút|tiếng|giờ)\b", source_l)
+        or re.search(r"\b\d{1,3}\s*(phút|tiếng)\b", source_l)
+        or re.search(r"\b\d{1,2}\s*giờ\s*rưỡi\b", source_l)
+    )
+
+    if duration_like_in_source:
+        return
+
+    # Nếu duration là phút nhưng source chỉ có giờ đồng hồ
+    if re.search(r"\b\d{1,3}\s*phút\b", duration_l):
+        old = item.get("duration_text")
+        item["duration_text"] = None
+        _flag(item, "false_duration_removed")
+        _note(item, f"duration_text removed because source_text has no real duration: '{old}'")
+
+
+def _fix_title_using_source_text(item: Dict[str, Any]) -> None:
+    """
+    Nếu title model sai hoặc không khớp source_text,
+    dùng source_text để cứu lại title tự nhiên hơn.
+    Đồng thời xoá cụm giờ bị dính vào title:
+    - 'học bài vào 20 giờ' -> 'học bài'
+    """
+    source_title = _extract_title_from_source_text(item.get("source_text"))
+    current_title = _safe_str(item.get("title"))
+
+    changed = False
+
+    if source_title and not current_title:
+        item["title"] = source_title
+        _flag(item, "title_inferred_from_source")
+        _note(item, f"title inferred from source_text: '{source_title}'")
+        changed = True
+
+    elif source_title and current_title:
+        current_l = current_title.lower()
+        source_l = source_title.lower()
+
+        title_sim = _jaccard(current_l, source_l)
+
+        # Case 1: source có "đi ..." nhưng title bị mất chữ "đi"
+        if source_l.startswith("đi ") and not current_l.startswith("đi "):
+            tail = source_l[3:].strip()
+
+            if current_l == tail or tail in current_l or current_l in tail:
+                old = item.get("title")
+                item["title"] = source_title
+                _flag(item, "title_refined_from_source")
+                _note(item, f"title refined from '{old}' to '{source_title}' using source_text")
+                changed = True
+
+        # Case 2: title model hoàn toàn không liên quan source_text
+        # Ví dụ: title = "thiền", source_title = "làm bài tập"
+        if not changed and title_sim < 0.25:
+            old = item.get("title")
+            item["title"] = source_title
+            _flag(item, "title_replaced_low_similarity_source")
+            _note(item, f"title replaced from '{old}' to '{source_title}' because it mismatched source_text")
+            changed = True
+
+        # Case 3: source_title dài hơn và bao trùm current_title
+        if not changed and current_l in source_l and len(source_l) > len(current_l) + 2:
+            old = item.get("title")
+            item["title"] = source_title
+            _flag(item, "title_refined_from_source")
+            _note(item, f"title refined from '{old}' to '{source_title}' using source_text")
+            changed = True
+
+    # Luôn chạy clean title cuối cùng để tránh:
+    # "học bài vào 20 giờ lúc 20 giờ"
+    cleaned_title = _remove_time_phrase_from_title(item.get("title"))
+
+    if cleaned_title and cleaned_title != item.get("title"):
+        old = item.get("title")
+        item["title"] = cleaned_title
+        _flag(item, "title_time_phrase_removed")
+        _note(item, f"title time phrase removed: '{old}' -> '{cleaned_title}'")
+
+
 
 def _same_or_empty(a: Optional[str], b: Optional[str]) -> bool:
     a = (a or "").strip().lower()
@@ -488,9 +660,14 @@ def semantic_fix_v2(normalized_data: Dict[str, Any]) -> Dict[str, Any]:
     for item in fixed_items:
         if original_input_text:
             _fix_time_duration_deadline_using_source(item, original_input_text)
+            _fix_false_duration_from_clock_time(item)
+            _fix_deadline_duration_confusion(item)
             _fix_person_field(item, original_input_text)
             _fix_location_field(item, original_input_text)
             _refine_time_from_source_text(item)
+            _fix_title_using_source_text(item)
+            _fix_common_model_typos(item)
+            _fix_item_type(item)
 
     # Bước 4: inject source nếu item nào vẫn chưa có
     if original_input_text:
@@ -627,3 +804,36 @@ def _fix_location_field(item: Dict[str, Any], original_input_text: str) -> None:
         item["constraint_text"] = None
         _flag(item, "location_moved_from_constraint")
         _note(item, f"location moved from constraint_text: '{constraint_text}'")
+
+
+
+def _fix_deadline_duration_confusion(item: Dict[str, Any]) -> None:
+    """
+    Model hay nhầm 'trong 2 tiếng' thành deadline_text.
+    Nếu deadline_text thực chất là duration thì xoá khỏi deadline_text.
+    """
+    deadline_text = _safe_str(item.get("deadline_text"))
+    duration_text = _safe_str(item.get("duration_text"))
+
+    if not deadline_text:
+        return
+
+    dl = deadline_text.lower()
+
+    is_duration_like = bool(
+        re.search(r"\btrong\s+\d{1,3}\s*(tiếng|giờ|phút)\b", dl)
+        or re.search(r"\b\d{1,3}\s*(tiếng|giờ|phút)\b", dl)
+    )
+
+    if not is_duration_like:
+        return
+
+    if not duration_text:
+        item["duration_text"] = deadline_text.replace("trong ", "").strip()
+        _flag(item, "duration_moved_from_deadline")
+        _note(item, f"duration_text moved from deadline_text: '{deadline_text}'")
+
+    old = item.get("deadline_text")
+    item["deadline_text"] = None
+    _flag(item, "deadline_removed_duration_confusion")
+    _note(item, f"deadline_text removed because it looked like duration: '{old}'")

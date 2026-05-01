@@ -52,7 +52,7 @@ Start the FastAPI server:
 uvicorn app.api.main:app --reload
 ```
 
-The service will be available at `http://localhost:8000`
+The service will be available at `http://localhost:5000`
 
 ### API Endpoints
 

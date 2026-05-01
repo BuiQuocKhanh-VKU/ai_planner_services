@@ -9,26 +9,41 @@ sys.path.append(PROJECT_ROOT)
 from app.pipelines.infer_pipeline import run_infer_pipeline
 
 if __name__ == "__main__":
-    text = "Tôi sẽ làm bài tập với Nam ở thư viện lúc 2 giờ và 3 giờ đi làm bài tập ở trường VKU"
+    text = "Tôi sẽ làm bài tập với Nghĩa ở thư viện lúc 3 giờ trong 2 tiếng và 4 giờ đi làm bài tập với Nam ở trường VKU"
     result = run_infer_pipeline(text)
 
     print("INPUT:")
     print(result["input_text"])
 
-    print("\nRAW OUTPUT:")
-    print(result["raw_output"])
+    # print("\nRAW OUTPUT:")
+    # print(result["raw_output"])
 
-    print("\nNORMALIZED OUTPUT:")
-    print(json.dumps(result["normalized_output"], ensure_ascii=False, indent=2))
+    # print("\nNORMALIZED OUTPUT:")
+    # print(json.dumps(result["normalized_output"], ensure_ascii=False, indent=2))
 
-    print("\nSEMANTIC OUTPUT:")
-    print(json.dumps(result["semantic_output"], ensure_ascii=False, indent=2))
+    # print("\nSEMANTIC OUTPUT:")
+    # print(json.dumps(result["semantic_output"], ensure_ascii=False, indent=2))
 
-    print("\nTEMPORAL OUTPUT:")
-    print(json.dumps(result["temporal_output"], ensure_ascii=False, indent=2))
+    # print("\nTEMPORAL OUTPUT:")
+    # print(json.dumps(result["temporal_output"], ensure_ascii=False, indent=2))
 
-    print("\nTEMPORAL ISSUES:")
-    print(result["temporal_issues"])
+    # print("\nTEMPORAL ISSUES:")
+    # print(result["temporal_issues"])
 
-    print("\nREPLY DRAFT FINAL:")
-    print(result["temporal_output"].get("reply_draft_final"))
+    # print("\nREPLY DRAFT FINAL:")
+    # print(result["temporal_output"].get("reply_draft_final"))
+
+    print("\nCLIENT RESPONSE:")
+    print(json.dumps(result.get("client_response"), ensure_ascii=False, indent=2))
+
+    print("\nFINAL REPLY:")
+    print(result.get("final_reply"))
+
+    print("\nNEEDS USER CONFIRMATION:")
+    print(result.get("needs_user_confirmation"))
+
+    print("\nCAN SYNC CALENDAR:")
+    print(result.get("can_sync_calendar"))
+
+    print("\nCONFLICTS:")
+    print(json.dumps(result.get("conflicts"), ensure_ascii=False, indent=2))
