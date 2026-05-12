@@ -224,6 +224,11 @@ def build_reply_draft_final(data: Dict[str, Any]) -> str:
 
     updated = _replace_item_count_vi(model_reply, n)
 
+# Nếu model_reply đã tự liệt kê nội dung sau dấu ":",
+# bỏ phần liệt kê cũ để tránh giữ lại danh sách sai/duplicate.
+    if ":" in updated:
+        updated = updated.split(":", 1)[0].strip()
+
     if summary:
         updated = updated.rstrip(". ")
         updated = f"{updated}: {summary}."

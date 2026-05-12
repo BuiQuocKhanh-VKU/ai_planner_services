@@ -23,18 +23,18 @@ TITLE_DURATION_RULES = [
         "source": "default_by_short_action_title",
     },
     {
-        "keywords": ["học", "học bài", "ôn", "ôn thi", "làm bài", "bài tập", "làm việc"],
+        "keywords": ["học", "học bài", "ôn", "ôn thi", "làm bài", "bài tập", "làm việc", "làm dự án", "làm báo cáo", "họp nhóm", "làm đồ án"],
         "minutes": 60,
         "source": "default_by_study_or_work_title",
     },
     {
-        "keywords": ["tập đàn", "tập gym", "chạy bộ", "thể dục", "đọc sách"],
+        "keywords": ["tập đàn", "tập gym", "chạy bộ", "thể dục", "đọc sách", "đọc báo", "giải trí", "xem phim", "nghe nhạc"],
         "minutes": 30,
         "source": "default_by_habit_title",
     },
     {
         "keywords": ["đi ngủ", "ngủ"],
-        "minutes": 15,
+        "minutes":360,
         "source": "default_by_sleep_anchor_title",
     },
 ]
@@ -116,10 +116,11 @@ def _build_default_duration_resolution(item: Dict[str, Any]) -> Dict[str, Any]:
         "source": inferred["source"],
         "is_default": True,
         "is_flexible": True,
-        "can_expand": False,
+        "needs_duration_confirmation": True,
+        "can_expand": True,
         "can_split": False,
         "min_minutes": max(15, min(minutes, 30)),
-        "max_minutes": minutes,
+        "max_minutes": max(minutes, 120),
     }
 
 

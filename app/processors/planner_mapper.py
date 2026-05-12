@@ -112,6 +112,13 @@ def _map_one_item_to_planner_payload(
     if isinstance(duration_resolution, dict):
         is_duration_default = bool(duration_resolution.get("is_default"))
 
+    needs_duration_confirmation = False
+    if isinstance(duration_resolution, dict):
+        needs_duration_confirmation = bool(
+            duration_resolution.get("needs_duration_confirmation")
+        )
+        
+
     return {
         # Backend sẽ tự thêm id, user_id, chat_session_id, source_message_id nếu cần
         "client_temp_id": f"ai_item_{index}",
@@ -154,6 +161,7 @@ def _map_one_item_to_planner_payload(
         "needs_confirmation": bool(item.get("needs_confirmation")),
         "has_conflict": bool(item.get("has_conflict")),
         "conflict_flags": item.get("conflict_flags", []),
+        "needs_duration_confirmation": needs_duration_confirmation,
 
         "ai_meta": {
             "index": index,

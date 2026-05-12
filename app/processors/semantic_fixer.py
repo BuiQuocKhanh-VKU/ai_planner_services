@@ -4,13 +4,16 @@ from typing import Any, Dict, List, Optional
 
 
 TIME_VAGUE_WORDS = {
-    "sáng", "trưa", "chiều", "tối", "đêm", "mai sáng", "mai chiều", "mai tối",
-    "hôm nay", "ngày mai", "mai", "tuần này"
+    "sáng", "trưa", "chiều", "tối", "đêm",
+    "hôm nay", "sáng nay", "trưa nay", "chiều nay", "tối nay",
+    "ngày mai", "mai", "sáng mai", "mai sáng",
+    "chiều mai", "mai chiều", "tối mai", "mai tối",
+    "tuần này"
 }
 
 EVENT_HINTS = {
-    "họp", "gặp", "meeting", "call", "phỏng vấn", "trao đổi", "hẹn",
-    "làm việc với", "họp team"
+    "họp", "gặp", "meeting", "call", "phỏng vấn", "trao đổi", "hẹn","lên lịch làm việc",
+    "làm việc với", "họp team", "lên kế hoạch", "họp nhóm", "họp với", "gặp gỡ", "gặp mặt", "gặp nhau", "gặp bạn", "gặp đồng nghiệp", "gặp sếp", "gặp khách hàng", "họp dự án"
 }
 
 TASK_HINTS = {
@@ -48,6 +51,82 @@ def _norm_space(text: Optional[str]) -> Optional[str]:
     text = re.sub(r"\s+", " ", text).strip()
     return text or None
 
+
+def _remove_polite_tail(text: Optional[str]) -> Optional[str]:
+    t = _norm_space(text)
+    if not t:
+        return None
+
+    t = re.sub(r"\s+(nhé|nha|ạ|nhe|với)\s*$", "", t, flags=re.IGNORECASE)
+    return _norm_space(t)
+
+
+def _looks_like_duration_phrase(text: Optional[str]) -> bool:
+    t = _remove_polite_tail(text)
+    if not t:
+        return False
+
+    t = t.lower()
+
+    patterns = [
+        r"^(trong\s+)?\d{1,3}\s*(tiếng|giờ|phút)$",
+        r"^\d{1,2}\s*giờ\s*rưỡi$",
+    ]
+
+    return any(re.search(p, t, flags=re.IGNORECASE) for p in patterns)
+
+
+def _clean_title_noise(text: Optional[str]) -> Optional[str]:
+    t = _norm_space(text)
+    if not t:
+        return None
+
+    # Bỏ modal/chủ ngữ đầu câu
+    t = re.sub(r"^\s*tôi\s+sẽ\s+", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"^\s*tôi\s+", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"^\s*sẽ\s+", "", t, flags=re.IGNORECASE)
+
+    # Bỏ cụm thời gian tương đối
+    t = re.sub(
+        r"\b(tối nay|sáng nay|chiều nay|hôm nay|ngày mai|mai|tối mai|sáng mai|chiều mai)\b",
+        "",
+        t,
+        flags=re.IGNORECASE,
+    )
+
+    # Bỏ giờ cụ thể: 20h, 20 giờ, 20:00
+    t = re.sub(
+        r"\b(lúc|vào|tầm|khoảng)?\s*\d{1,2}(?::\d{2})?\s*(h|giờ)\b",
+        "",
+        t,
+        flags=re.IGNORECASE,
+    )
+
+    # Bỏ duration: trong 1 tiếng, 1 tiếng, 30 phút, 1 giờ rưỡi
+    t = re.sub(
+        r"\btrong\s+\d{1,3}\s*(tiếng|giờ|phút)\b",
+        "",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        r"\b\d{1,3}\s*(tiếng|phút)\b",
+        "",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        r"\b\d{1,2}\s*giờ\s*rưỡi\b",
+        "",
+        t,
+        flags=re.IGNORECASE,
+    )
+
+    t = _remove_polite_tail(t)
+    if not t:
+        return None
+
+    return _norm_space(t.strip(" ,.-:"))
 
 def _lower(text: Optional[str]) -> str:
     return _norm_space(text).lower() if text else ""
@@ -222,6 +301,20 @@ def _fix_time_duration_deadline_using_source(item: Dict[str, Any], original_inpu
     source_clock_times = _extract_all_clock_times(frag_l)
     source_durations = _extract_duration_phrases(frag_l)
 
+    # Nếu source_text đã được gán riêng cho item và có giờ cụ thể,
+    # ưu tiên giờ trong source_text hơn giờ model đoán.
+    # Ví dụ: source_text = "22h làm bài tập" thì time_text phải là "22h",
+    # dù model lỡ trả time_text = "20h".
+    if source_clock_times:
+        best_time = source_clock_times[0]
+        current_time = item.get("time_text")
+
+        if current_time != best_time:
+            old = item.get("time_text")
+            item["time_text"] = best_time
+            _flag(item, "time_forced_from_source_fragment")
+            _note(item, f"time_text forced from '{old}' to '{best_time}' using assigned source_text")
+
     # "lúc 2 giờ" => start time
     if re.search(r"\b(lúc|vào|tầm|khoảng)\s+\d{1,2}(?::\d{2})?\s*(giờ|h)\b", frag_l):
         if source_clock_times:
@@ -270,12 +363,42 @@ def _is_explicit_spurious(item: Dict[str, Any]) -> bool:
 
     return False
 
+def _is_exact_clock_time_text(text: Optional[str]) -> bool:
+    t = _lower(text)
+    if not t:
+        return False
+
+    return bool(re.search(r"\b\d{1,2}(?::\d{2})?\s*(h|giờ)\b", t))
+
+
+def _item_quality_score(item: Dict[str, Any]) -> int:
+    score = 0
+
+    if item.get("title"):
+        score += 1
+
+    if item.get("duration_text"):
+        score += 2
+
+    if item.get("source_text"):
+        score += 2
+
+    if item.get("deadline_text"):
+        score += 1
+
+    time_text = item.get("time_text")
+
+    if _is_exact_clock_time_text(time_text):
+        score += 8
+    elif _lower(time_text) in TIME_VAGUE_WORDS:
+        score += 2
+    elif time_text:
+        score += 1
+
+    return score
 
 def _score_item_info(item: Dict[str, Any]) -> int:
-    return sum(
-        1 for k in ["time_text", "duration_text", "deadline_text", "priority", "source_text"]
-        if item.get(k)
-    )
+    return _item_quality_score(item)
 
 
 def _score_item_fragment_match(item: Dict[str, Any], fragment: str) -> float:
@@ -312,6 +435,13 @@ def _score_item_fragment_match(item: Dict[str, Any], fragment: str) -> float:
 def _assign_source_fragments_one_to_one(items: List[Dict[str, Any]], original_input_text: str) -> None:
     """
     Gán source_text cho từng item theo kiểu 1 fragment chỉ dùng 1 lần.
+
+    Bản cải tiến:
+    - Ưu tiên match theo score.
+    - Nếu item match kém nhưng còn fragment chưa dùng, gán fallback theo thứ tự.
+    Nhờ vậy case:
+    'Tối nay họp nhóm lúc 20h và 22h làm bài tập'
+    vẫn cứu được item thứ 2 từ fragment '22h làm bài tập'.
     """
     fragments = _source_context(original_input_text)
     if not fragments:
@@ -319,7 +449,7 @@ def _assign_source_fragments_one_to_one(items: List[Dict[str, Any]], original_in
 
     used_fragment_indexes = set()
 
-    for item in items:
+    for item_index, item in enumerate(items):
         best_idx = None
         best_score = -1.0
 
@@ -332,13 +462,32 @@ def _assign_source_fragments_one_to_one(items: List[Dict[str, Any]], original_in
                 best_score = score
                 best_idx = idx
 
+        # Nếu match tốt thì dùng best fragment
         if best_idx is not None and best_score > 0:
             chosen = fragments[best_idx]
             item["source_text"] = chosen
             _flag(item, "source_text_assigned_1to1")
             _note(item, f"source_text assigned by 1-1 matching: '{chosen}'")
             used_fragment_indexes.add(best_idx)
+            continue
 
+        # Fallback: nếu model sinh title sai, vẫn gán fragment còn lại theo thứ tự
+        fallback_idx = None
+
+        if item_index < len(fragments) and item_index not in used_fragment_indexes:
+            fallback_idx = item_index
+        else:
+            for idx in range(len(fragments)):
+                if idx not in used_fragment_indexes:
+                    fallback_idx = idx
+                    break
+
+        if fallback_idx is not None:
+            chosen = fragments[fallback_idx]
+            item["source_text"] = chosen
+            _flag(item, "source_text_assigned_by_order_fallback")
+            _note(item, f"source_text assigned by order fallback: '{chosen}'")
+            used_fragment_indexes.add(fallback_idx)
 
 def _refine_time_from_source_text(item: Dict[str, Any]) -> None:
     """
@@ -366,8 +515,8 @@ def _extract_title_from_source_text(text: Optional[str]) -> Optional[str]:
     """
     Cứu title từ source_text sau khi đã gán fragment.
     Ví dụ:
+    - 'Tối nay 20h học tiếng Anh trong 1 tiếng nhé' -> 'học tiếng Anh'
     - '3 giờ đi làm bài tập ở trường VKU' -> 'đi làm bài tập'
-    - 'Tôi sẽ làm bài tập với Nam ở thư viện lúc 2 giờ' -> 'làm bài tập'
     """
     t = _norm_space(text)
     if not t:
@@ -378,40 +527,34 @@ def _extract_title_from_source_text(text: Optional[str]) -> Optional[str]:
     t = re.sub(r"^\s*tôi\s+", "", t, flags=re.IGNORECASE)
     t = re.sub(r"^\s*sẽ\s+", "", t, flags=re.IGNORECASE)
 
-    # Bỏ cụm thời gian tương đối ở đầu câu để tránh nhầm vào title
-    t = re.sub(r"^\s*(ngày\s+mai|mai|hôm\s+nay|tối\s+nay|sáng\s+mai|chiều\s+mai|tối\s+mai)\s+", "", t, flags=re.IGNORECASE)
-
-     # Bỏ giờ ở đầu câu: "3 giờ đi làm bài tập..." -> "đi làm bài tập..."
-    t = re.sub(r"^\s*\d{1,2}(?::\d{2})?\s*(giờ|h)\s+", "", t, flags=re.IGNORECASE)
-
-    # Cắt trước các cụm person/location/time/deadline
-    t = re.split(
-        r"\s+(với|cùng|ở|tại|lúc|vào|tầm|khoảng|trước|sau)\s+",
-        t,
-        maxsplit=1,
-        flags=re.IGNORECASE
-    )[0]
-
-    t = t.strip(" ,.-:")
-    return _norm_space(t)
-
-
-def _remove_time_phrase_from_title(title: Optional[str]) -> Optional[str]:
-    t = _norm_space(title)
-    if not t:
-        return None
-
-    # "học bài vào 20 giờ" -> "học bài"
-    # "học bài lúc 20 giờ" -> "học bài"
+    # Bỏ cụm thời gian ở đầu câu
     t = re.sub(
-        r"\s+(lúc|vào|tầm|khoảng)\s+\d{1,2}(?::\d{2})?\s*(giờ|h)\b",
+        r"^\s*(ngày\s+mai|mai|hôm\s+nay|tối\s+nay|sáng\s+mai|chiều\s+mai|tối\s+mai|sáng nay|chiều nay)\s+",
         "",
         t,
-        flags=re.IGNORECASE
+        flags=re.IGNORECASE,
     )
 
-    t = t.strip(" ,.-:")
-    return _norm_space(t)
+    # Bỏ giờ ở đầu câu: "20h học tiếng Anh..." -> "học tiếng Anh..."
+    t = re.sub(
+        r"^\s*\d{1,2}(?::\d{2})?\s*(giờ|h)\s+",
+        "",
+        t,
+        flags=re.IGNORECASE,
+    )
+
+    # Cắt trước person/location/time/deadline/duration
+    t = re.split(
+        r"\s+(với|cùng|ở|tại|lúc|vào|tầm|khoảng|trước|sau|trong)\s+",
+        t,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+
+    return _clean_title_noise(t)
+
+def _remove_time_phrase_from_title(title: Optional[str]) -> Optional[str]:
+    return _clean_title_noise(title)
 
 
 def _fix_common_model_typos(item: Dict[str, Any]) -> None:
@@ -538,7 +681,7 @@ def _should_consider_duplicate(item: Dict[str, Any], existing: Dict[str, Any]) -
     existing_title = _normalize_title_for_duplicate(existing.get("title"))
 
     title_sim = _jaccard(item_title, existing_title)
-    if title_sim < 0.90:
+    if title_sim < 0.75:
         return False
 
     item_time = (item.get("time_text") or "").strip().lower()
@@ -550,8 +693,11 @@ def _should_consider_duplicate(item: Dict[str, Any], existing: Dict[str, Any]) -
     item_person = (item.get("person") or "").strip().lower()
     existing_person = (existing.get("person") or "").strip().lower()
 
+    # Nếu cả hai có giờ cụ thể khác nhau thì không phải duplicate.
+    # Nhưng nếu một bên là "tối nay/hôm nay/mai" còn một bên là "20h" thì vẫn coi là duplicate.
     if item_time and existing_time and item_time != existing_time:
-        return False
+        if item_time not in TIME_VAGUE_WORDS and existing_time not in TIME_VAGUE_WORDS:
+            return False
 
     if item_location and existing_location and item_location != existing_location:
         return False
@@ -559,19 +705,14 @@ def _should_consider_duplicate(item: Dict[str, Any], existing: Dict[str, Any]) -
     if item_person and existing_person and item_person != existing_person:
         return False
 
-    same_time = _same_or_empty(item.get("time_text"), existing.get("time_text"))
-    same_location = _same_or_empty(item.get("location"), existing.get("location"))
-    same_person = _same_or_empty(item.get("person"), existing.get("person"))
-
-    return same_time and same_location and same_person
-
+    return True
 
 def _normalize_title_for_duplicate(title: Optional[str]) -> str:
-    t = _lower(title)
+    t = _clean_title_noise(title)
+    t = _lower(t)
     if not t:
         return ""
 
-    # bỏ prefix "đi" nếu có để so duplicate mềm hơn
     t = re.sub(r"^\s*đi\s+", "", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
@@ -755,22 +896,27 @@ def _extract_location_from_source_text(text: str) -> Optional[str]:
     text = _safe_str(text) or ""
 
     patterns = [
-        r"\bở\s+([a-zA-ZÀ-Ỵà-ỵ0-9\s]+?)(?=\s+(lúc|vào|tầm|khoảng|trước|sau|với|cùng|và)\b|$)",
-        r"\btại\s+([a-zA-ZÀ-Ỵà-ỵ0-9\s]+?)(?=\s+(lúc|vào|tầm|khoảng|trước|sau|với|cùng|và)\b|$)",
-        r"\bở chỗ\s+([a-zA-ZÀ-Ỵà-ỵ0-9\s]+?)(?=\s+(lúc|vào|tầm|khoảng|trước|sau|với|cùng|và)\b|$)",
-        r"\btrong\s+([a-zA-ZÀ-Ỵà-ỵ0-9\s]+?)(?=\s+(lúc|vào|tầm|khoảng|trước|sau|với|cùng|và)\b|$)",
+        r"\bở\s+([a-zA-ZÀ-Ỵà-ỵ0-9\s]+?)(?=\s+(lúc|vào|tầm|khoảng|trước|sau|với|cùng|và|trong)\b|$)",
+        r"\btại\s+([a-zA-ZÀ-Ỵà-ỵ0-9\s]+?)(?=\s+(lúc|vào|tầm|khoảng|trước|sau|với|cùng|và|trong)\b|$)",
+        r"\bở chỗ\s+([a-zA-ZÀ-Ỵà-ỵ0-9\s]+?)(?=\s+(lúc|vào|tầm|khoảng|trước|sau|với|cùng|và|trong)\b|$)",
     ]
 
     for pattern in patterns:
         m = re.search(pattern, text, flags=re.IGNORECASE)
         if m:
             location = m.group(1).strip(" ,.-:")
-            location = _norm_space(location)
-            if location:
-                return location
+            location = _remove_polite_tail(location)
+
+            if not location:
+                continue
+
+            # Không cho duration bị hiểu nhầm thành location
+            if _looks_like_duration_phrase(location):
+                continue
+
+            return location
 
     return None
-
 
 def _looks_like_location_text(text: Optional[str]) -> bool:
     t = _safe_str(text)
