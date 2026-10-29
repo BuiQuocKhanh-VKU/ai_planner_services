@@ -9,7 +9,7 @@ sys.path.append(PROJECT_ROOT)
 from app.pipelines.infer_pipeline import run_infer_pipeline
 
 if __name__ == "__main__":
-    text = "Tôi sẽ làm bài tập với Nghĩa ở thư viện lúc 3 giờ trong 2 tiếng và 4 giờ đi làm bài tập với Nam ở trường VKU"
+    text = "Sáng nay tại quán cà phê ABC tôi sẽ uống cà phê từ 7h đến 11h và làm bài tập nhóm tại quán đó từ 8h đến 10h "
     result = run_infer_pipeline(text)
 
     print("INPUT:")
